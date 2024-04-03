@@ -3,4 +3,5 @@
  (public_name markup-lwt.unix)
  (synopsis "Lwt_unix helpers for Markup.ml")
  (instrumentation (backend bisect_ppx))
- (libraries lwt lwt.unix markup markup-lwt))
+ (libraries extlib lwt lwt.unix markup markup-lwt)
+ (flags (:standard -open ExtLib)))
