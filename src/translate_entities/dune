@@ -1,3 +1,4 @@
 (executable
  (name translate_entities)
- (libraries yojson))
+ (libraries extlib yojson)
+ (flags (:standard -open ExtLib)))
