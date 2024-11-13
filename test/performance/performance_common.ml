@@ -18,7 +18,7 @@ let measure runs library source format f =
 
   Printf.printf "  %s: %.0f us\n" name average
 
-let all_pages = [`Html, "test/pages/google"; `Xml, "test/pages/xml_spec"]
+let all_pages = [`Html, "test/pages/google"; `Xml, "test/pages/xml_spec"; `Html, "test/pages/problem_oom_01"]
 
 let do_full_benchmark ?(runs = 100) ?parse_html ?parse_xml library =
   List.iter 
