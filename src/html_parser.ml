@@ -460,6 +460,9 @@ sig
   val remove : t -> element -> unit
   val replace : t -> old:element -> new_:element -> unit
   val insert_below : t -> anchor:element -> new_:element -> unit
+
+  (**  [check_limit ~exn stack] raises [exn] if [stack] has reached it's limit. *)
+  val check_limit: t -> exn:exn -> unit
 end =
 struct
   type t = (element list ref * int)
@@ -511,6 +514,14 @@ struct
           else scan (depth-1) more
     in
     scan depth_limit !open_elements
+
+  let check_limit (open_elements, depth_limit) ~exn =
+    let rec go depth = function
+      | [] -> ()
+      | _ :: _ when depth = 0 -> raise exn
+      | _ :: more -> go (depth - 1) more
+    in
+    go depth_limit !open_elements
 
   let scope_delimiters =
     [`HTML, "applet"; `HTML, "caption"; `HTML, "html";
@@ -1217,6 +1228,10 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     in
     let elements_ref = Stack.elements open_elements in
     elements_ref := element_entry::!elements_ref;
+    Stack.check_limit open_elements
+      ~exn:(Failure
+        (Format.sprintf "Pushing %S at (l: %d, c: %d) depth limit reached"
+          name (fst location) (snd location)));
 
     if set_form_element_pointer then
       form_element_pointer := Some element_entry;
