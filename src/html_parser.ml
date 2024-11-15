@@ -435,7 +435,7 @@ end
 (* Stack of open elements. *)
 module Stack :
 sig
-  type t = (element list ref * int)
+  type t = (element list ref * int option)
 
   val create : ?limit:int -> unit -> t
   val elements : t -> element list ref
@@ -465,11 +465,11 @@ sig
   val check_limit: t -> exn:exn -> unit
 end =
 struct
-  type t = (element list ref * int)
+  type t = (element list ref * int option)
   (** The Adoption Agency algorithm sometimes push too many elements when trying to recover
       from malformed HTMLs. Most of the time such HTML *)
 
-  let create ?(limit=Int.max_int) () = (ref [], limit)
+  let create ?limit () = (ref [], limit)
   let elements (el, _) = el
 
   let current_element (open_elements, _) =
@@ -503,17 +503,34 @@ struct
       (fun {element_name = ns, name'} ->
         ns = `HTML && name' = name) !open_elements
 
-  let in_scope_general scope_delimiters (open_elements, depth_limit) name' =
-    let rec scan depth = function
+  let with_scan error_prefix (open_elements, depth_limit) ~condition =
+    let rec scan_with_depth depth = function
       | [] -> false
-      | _ when depth = 0 -> failwith "in_scope_general: depth limit reached"
-      | {element_name = ns, name'' as name}::more ->
-        if ns = `HTML && name'' = name' then true
-        else
-          if list_mem_qname name scope_delimiters then false
-          else scan (depth-1) more
+      | _ when depth = 0 -> Format.kasprintf failwith "%s: depth limit reached" error_prefix
+      | elt ::more ->
+          begin match condition elt with
+          | Some v -> v
+          | None -> scan_with_depth (depth-1) more
+          end 
     in
-    scan depth_limit !open_elements
+    let rec scan_without_depth = function
+      | [] -> false
+      | elt ::more ->
+          begin match condition elt with
+          | Some v -> v
+          | None -> scan_without_depth  more
+          end 
+    in
+    match depth_limit with
+    | None -> scan_without_depth !open_elements
+    | Some depth -> scan_with_depth depth !open_elements
+
+  let in_scope_general scope_delimiters stack name' =
+    with_scan "in_scope_general" stack ~condition:(fun {element_name = ns, name'' as name} ->
+        if ns = `HTML && name'' = name' then Some true
+        else
+          if list_mem_qname name scope_delimiters then Some false
+          else None)
 
   let check_limit (open_elements, depth_limit) ~exn =
     let rec go depth = function
@@ -521,7 +538,9 @@ struct
       | _ :: _ when depth = 0 -> raise exn
       | _ :: more -> go (depth - 1) more
     in
-    go depth_limit !open_elements
+    Option.may 
+      (fun limit -> go limit !open_elements)
+      depth_limit
 
   let scope_delimiters =
     [`HTML, "applet"; `HTML, "caption"; `HTML, "html";
@@ -541,57 +560,37 @@ struct
   let in_table_scope =
     in_scope_general [`HTML, "html"; `HTML, "table"; `HTML, "template"]
 
-  let in_select_scope (open_elements, depth_limit) name =
-    let rec scan depth = function
-      | [] -> false
-      | _ when depth = 0 -> failwith "in_select_scope: depth limit reached"
-      | {element_name = ns, name'}::more ->
-        if ns <> `HTML then false
+  let in_select_scope stack name =
+    with_scan "in_select_scope" stack ~condition:(fun {element_name = ns, name'} ->
+        if ns <> `HTML then Some false
         else
-          if name' = name then true
+          if name' = name then Some true
           else
-            if name' = "optgroup" || name' = "option" then scan (depth-1) more
-            else false
-    in
-    scan depth_limit !open_elements
+            if name' = "optgroup" || name' = "option" then None
+            else Some false)
 
-  let one_in_scope (open_elements, depth_limit) names =
-    let rec scan depth = function
-      | [] -> false
-      | _ when depth = 0 -> failwith "one_in_scope: depth limit reached"
-      | {element_name = ns, name' as name}::more ->
-        if ns = `HTML && list_mem_string name' names then true
+  let one_in_scope stack names =
+    with_scan "one_in_scope" stack ~condition:(fun {element_name = ns, name' as name} ->
+        if ns = `HTML && list_mem_string name' names then Some true
         else
-          if list_mem_qname name scope_delimiters then false
-          else scan (depth-1) more
-    in
-    scan depth_limit !open_elements
+          if list_mem_qname name scope_delimiters then Some false
+          else None)
 
-  let one_in_table_scope (open_elements, depth_limit) names =
-    let rec scan depth = function
-      | [] -> false
-      | _ when depth = 0 -> failwith "one_in_table_scope: depth limit reached"
-      | {element_name = ns, name' as name}::more ->
-        if ns = `HTML && list_mem_string name' names then true
+  let one_in_table_scope stack names =
+    with_scan "one_in_table_scope" stack ~condition:(fun {element_name = ns, name' as name} ->
+        if ns = `HTML && list_mem_string name' names then Some true
         else
           if list_mem_qname name
               [`HTML, "html"; `HTML, "table"; `HTML, "template"] then
-            false
-          else scan (depth-1) more
-    in
-    scan depth_limit !open_elements
+            Some false
+          else None)
 
-  let target_in_scope (open_elements, depth_limit) node =
-    let rec scan depth = function
-      | [] -> false
-      | _ when depth = 0 -> failwith "target_in_scope: depth limit reached"
-      | e::more ->
-        if e == node then true
+  let target_in_scope stack node =
+    with_scan "target_in_scope" stack ~condition:(fun e ->
+        if e == node then Some true
         else
-          if list_mem_qname node.element_name scope_delimiters then false
-          else scan (depth-1) more
-    in
-    scan depth_limit !open_elements
+          if list_mem_qname node.element_name scope_delimiters then Some false
+          else None)
 
   let remove (open_elements, _) element =
     open_elements := List.filter ((!=) element) !open_elements;
@@ -825,6 +824,7 @@ struct
       | l, Comment s -> (l, `Comment s)::acc
     in
 
+    let depth_limit = Option.default Int.max_int depth_limit in
     let result =
       List.fold_left (traverse depth_limit) []
         (Stack.require_current_element subtree_buffer.open_elements).children
