@@ -1135,7 +1135,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
           | _::ancestors -> iterate' ancestors
         in
         iterate' ancestors
-      | {element_name = _, ("tr" | "th")}::_::_ -> in_cell_mode
+      | {element_name = _, ("td" | "th")}::_::_ -> in_cell_mode
       | {element_name = _, "tr"}::_ -> in_row_mode
       | {element_name = _, ("tbody" | "thead" | "tfoot")}::_ ->
         in_table_body_mode
