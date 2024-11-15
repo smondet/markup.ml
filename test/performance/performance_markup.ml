@@ -9,6 +9,6 @@ let (|>) x f = f x
 let () =
   do_full_benchmark "markup.ml"
     ~parse_html:(fun page ->
-      file page |> fst |> parse_html |> signals |> drain)
+      file page |> fst |> parse_html ~depth_limit:100 |> signals |> drain)
     ~parse_xml:(fun page ->
       file page |> fst |> parse_xml |> signals |> drain)
