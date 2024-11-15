@@ -1,6 +1,35 @@
 (* This file is part of Markup.ml, released under the MIT license. See
    LICENSE.md for details, or visit https://github.com/aantron/markup.ml. *)
 
+
+let stuck_hack : ((string * int * int * int) * string, int ref) Hashtbl.t = Hashtbl.create 42
+let dbg ?__FUNCTION__ ?could_be_stuck:_ ?__POS__ fmt =
+  (* let pos = match __POS__ with Some (s, i, _, _) -> Format.sprintf "[%s:%d]" s i | None -> "" in *)
+  let ppf = Format.err_formatter in
+  let open Format in
+  fprintf ppf ("%a" ^^ fmt ^^ "@]@.")
+    begin fun ppf () ->
+      fprintf ppf "@[<2>DBG";
+      Option.may (fun (s, i, _, _) -> fprintf ppf "[%s:%d]" s i ) __POS__;
+      Option.may (fun s -> fprintf ppf " %s" (if String.ends_with s ~suffix:".(fun)" then String.sub s 0 (String.length s - 6) else s))   __FUNCTION__;
+      fprintf ppf ":@ "
+    end ()
+  (*
+  Format.kasprintf (fun s ->
+    begin match could_be_stuck with None -> () | Some maxcount ->
+      Option.may (fun k -> 
+        let count = 
+          try Hashtbl.find stuck_hack (k, s)
+          with _ ->
+            (let r = ref 0 in
+            Hashtbl.add stuck_hack (k,s) r; r) in
+        if !count >= maxcount then Format.kasprintf failwith "stuck: %s: %s" pos s
+        else incr count
+            ) __POS__;
+    end;
+    Printf.eprintf "DBG%s(%s): %s\n%!" pos __FUNCTION__ s) fmt
+    *)
+
 type 'a cont = 'a -> unit
 type 'a cps = exn cont -> 'a cont -> unit
 

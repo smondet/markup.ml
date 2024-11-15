@@ -503,7 +503,8 @@ struct
   let in_scope_general scope_delimiters (open_elements, depth_limit) name' =
     let rec scan depth = function
       | [] -> false
-      | _ when depth = 0 -> failwith "in_scope_general: depth limit reached"
+      | x :: _ when depth = 0 ->
+          Format.kasprintf failwith "in_scope_general: depth limit reached (%S Vs %S)" name' (snd x.element_name)
       | {element_name = ns, name'' as name}::more ->
         if ns = `HTML && name'' = name' then true
         else
@@ -601,6 +602,13 @@ struct
 end
 
 
+let pp_stack ppf stack = let open Format in
+  let pp_elt ppf { element_name = (ns, n) ; _ } =
+    fprintf ppf "{%s::%s}" (Ns.to_string ns) n in
+  fprintf ppf "@[[";
+  List.iter (fun e -> fprintf ppf "%a;@ " pp_elt e) !(Stack.elements stack);
+  fprintf ppf "]@]";
+  ()
 
 (* List of active formatting elements. *)
 module Active :
@@ -1090,6 +1098,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
         Element.create ~suppress:true (`HTML, "html") (1, 1) in
       (Stack.elements open_elements) := [notional_root]
     end;
+    dbg ~__POS__ "tok: %s" (Option.map_default (Printf.sprintf "%S") "None" (Context.token context));
 
     begin match Context.the_context context with
     | `Fragment (`HTML, "template") ->
@@ -1135,7 +1144,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
           | _::ancestors -> iterate' ancestors
         in
         iterate' ancestors
-      | {element_name = _, ("tr" | "th")}::_::_ -> in_cell_mode
+      | {element_name = _, ("td" | "th")}::_::_ -> in_cell_mode (* XXX look like bug: tr Vs td *)
       | {element_name = _, "tr"}::_ -> in_row_mode
       | {element_name = _, ("tbody" | "thead" | "tfoot")}::_ ->
         in_table_body_mode
@@ -1177,8 +1186,11 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   and emit_text m =
     match Text.emit text with
-    | None -> m ()
+    | None ->
+        dbg ~__POS__ "emit_text None";
+        m ()
     | Some (l', strings) ->
+        dbg ~__POS__ "emit_text (%d, %d): [%s]" (fst l') (snd l') (String.concat "; " (List.map (Format.sprintf "%S") strings));
       emit' l' (`Text strings) m
 
   and emit l s m = emit_text (fun () -> emit' l s m)
@@ -1187,7 +1199,8 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       ?(formatting = false) ?(acknowledge = false) ?(namespace = `HTML)
       ?(set_form_element_pointer = false) location
       ({Token_tag.name; attributes; self_closing} as tag) mode =
-
+      dbg (* ~could_be_stuck:10 *) ~__POS__ ~__FUNCTION__ "%S@ acknowledge: %b,@ ns: %s (%d, %d).@ %a"
+             tag.name acknowledge (Ns.to_string namespace) (fst location) (snd location) pp_stack open_elements;
     report_if (self_closing && not acknowledge) location (fun () ->
       `Bad_token ("/>", "tag", "should not be self-closing"))
       !throw (fun () ->
@@ -1217,6 +1230,8 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     in
     let elements_ref = Stack.elements open_elements in
     elements_ref := element_entry::!elements_ref;
+    if List.length !elements_ref > 100 then
+      Format.kasprintf failwith "Alternate max-depth reached";
 
     if set_form_element_pointer then
       form_element_pointer := Some element_entry;
@@ -1225,6 +1240,9 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       active_formatting_elements :=
         Active.Element_ (element_entry, location, tag)::
           !active_formatting_elements;
+
+    dbg ~__POS__ ~__FUNCTION__ "formatting: %b@ set_form_element_pointer: %b@ is_html_integration_point: %b"
+      formatting set_form_element_pointer is_html_integration_point;
 
     emit location
       (`Start_element ((namespace_string, tag_name), attributes)) mode)
@@ -1252,6 +1270,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       match !(Stack.elements open_elements) with
       | [] -> mode ()
       | element::_ ->
+      dbg ~__POS__ ~__FUNCTION__ "%s:%s (%d, %d)" (Ns.to_string (fst element.element_name)) ((snd element.element_name)) (fst location) (snd location);
         if condition element then mode ()
         else pop location iterate
     in
@@ -1276,6 +1295,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     iterate ()
 
   and pop_implied ?(except = "") location mode =
+    dbg ~__POS__ "pop_implied (%d, %d)" (fst location) (snd location);
     pop_until (fun {element_name = _, name} ->
       name = except ||
         not @@ list_mem_string name
@@ -1283,17 +1303,20 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
            "rtc"]) location mode
 
   and pop_to_table_context location mode =
+    dbg ~__POS__ "pop_to_table_context (%d, %d)" (fst location) (snd location);
     pop_until (function
       | {element_name = `HTML, ("table" | "template" | "html")} -> true
       | _ -> false) location mode
 
   and pop_to_table_body_context location mode =
+    dbg ~__POS__ "pop_to_table_body_context (%d, %d)" (fst location) (snd location);
     pop_until (function
       | {element_name =
           `HTML, ("tbody" | "thead" | "tfoot" | "template" | "html")} -> true
       | _ -> false) location mode
 
   and pop_to_table_row_context location mode =
+    dbg ~__POS__ "pop_to_table_row_context (%d, %d)" (fst location) (snd location);
     pop_until (function
       | {element_name = `HTML, ("tr" | "template" | "html")} -> true
       | _ -> false) location mode
@@ -1327,6 +1350,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     pop location mode)))
 
   and close_current_p_element l mode =
+    dbg ~__POS__ "close_current_p_element  (%d, %d)" (fst l) (snd l);
     if Stack.in_button_scope open_elements "p" then
       close_element_with_implied "p" l mode
     else mode ()
@@ -1377,7 +1401,13 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   (* 8.2.5. *)
   and dispatch tokens rules =
-    next tokens !throw (fun () -> !ended ()) begin fun ((_, t) as v) ->
+    next tokens !throw (fun () -> !ended ()) begin fun ((l, t) as v) ->
+      let ctxt =
+        let open Context in 
+        let e =  element context  |> Option.map_default (fun e -> snd e.element_name) "no-elt" in
+        let tok = token context |> Option.default "no-tok" in
+        Format.sprintf "(%s, %S)" e tok in
+      dbg ~__POS__ ~__FUNCTION__ " context: %s next.K (%d, %d)" ctxt (fst l) (snd l);
       let foreign =
         match Stack.adjusted_current_element context open_elements, t with
         | None, _ -> false
@@ -1391,8 +1421,11 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
         | Some {is_html_integration_point = true}, `Char _ -> false
         | Some {is_html_integration_point = true}, `String _ -> false
         | _, `EOF -> false
-        | _ -> true
+        | Some e, _ ->
+      dbg ~__POS__ ~__FUNCTION__ " foreignigty: %s. %s " (fst e.element_name  |> Ns.to_string) (snd e.element_name);
+            true
       in
+      dbg ~__POS__ ~__FUNCTION__ " foreign: %b "  foreign;
 
       if not foreign then rules v
       else foreign_content !current_mode (fun () -> rules v) v
@@ -1646,6 +1679,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   (* 8.2.5.4.7. *)
   and in_body_mode () =
+    dbg ~__POS__ "in_body_mode";
     dispatch tokens (fun v -> in_body_mode_rules "body" in_body_mode v)
 
   (* 8.2.5.4.7. *)
@@ -1654,6 +1688,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       report l (`Bad_token ("U+0000", "body", "null")) !throw mode
 
     | l, `String s ->
+        dbg ~__POS__ "string: %S" s;
       reconstruct_active_formatting_elements (fun () ->
       add_string l s;
       if not @@ is_whitespace_only s then frameset_ok := false;
@@ -1718,6 +1753,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       | _ -> in_template_mode_rules mode v)
 
     | l, `End {name = "body"} ->
+          dbg ~__POS__ "end body (%d, %d)" (fst l) (snd l);
       if not @@ Stack.in_scope open_elements "body" then
         report l (`Unmatched_end_tag "body") !throw mode
       else
@@ -1728,6 +1764,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
         after_body_mode ())
 
     | l, `End {name = "html"} as v ->
+          dbg ~__POS__ "end html (%d, %d)" (fst l) (snd l);
       if not @@ Stack.in_scope open_elements "body" then
         report l (`Unmatched_end_tag "html") !throw mode
       else
@@ -1743,6 +1780,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
         "details" | "dialog" | "dir" | "div" | "dl" | "fieldset" |
         "figcaption" | "figure" | "footer" | "header" | "hgroup" | "main" |
         "nav" | "ol" | "p" | "section" | "summary" | "ul"} as t) ->
+          dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       close_current_p_element l (fun () ->
       push_and_emit l t mode)
 
@@ -1772,6 +1810,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
           mode ())))
 
     | l, `Start ({name = "form"} as t) ->
+        dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       if !form_element_pointer <> None &&
          not @@ Stack.has open_elements "template" then
         misnested_tag l t "form" mode
@@ -1845,6 +1884,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
           close_element_with_implied "form" l mode
 
     | l, `End {name = "p"} ->
+        dbg ~__POS__ "end p (%d, %d)"  (fst l) (snd l);
       (fun mode' ->
         if not @@ Stack.in_button_scope open_elements "p" then
           report l (`Unmatched_end_tag "p") !throw (fun () ->
@@ -1905,6 +1945,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       push_and_emit ~formatting:true l t mode)
 
     | l, `Start ({name = "nobr"} as t) ->
+        dbg ~__POS__ "nobr really? %d, %d" (fst l) (snd l);
       Subtree.enable subtree_buffer;
       reconstruct_active_formatting_elements (fun () ->
       (fun k ->
@@ -1935,6 +1976,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       end
 
     | l, `Start ({name = "table"} as t) ->
+          dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       frameset_ok := false;
       close_current_p_element l (fun () ->
       push_and_emit l t in_table_mode)
@@ -2050,14 +2092,17 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       else mode ()))
 
     | l, `Start ({name = "svg"} as t) ->
+          dbg ~__POS__ "start %S(%b) (%d, %d)" t.name t.self_closing (fst l) (snd l);
       reconstruct_active_formatting_elements (fun () ->
       push_and_emit ~acknowledge:true ~namespace:`SVG l t (fun () ->
+  dbg ~__POS__ "push_and_emit.K %S (%d, %d)" t.name (fst l) (snd l);
       if t.self_closing then pop l mode
       else mode ()))
 
     | l, `Start ({name =
         "caption" | "col" | "colgroup" | "frame" | "head" | "tbody" | "td" |
         "tfoot" | "th" | "thead" | "tr"} as t) ->
+          dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       misnested_tag l t context_name mode
 
     | l, `Start t ->
@@ -2139,18 +2184,22 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     set_tokenizer_state `RAWTEXT;
     text_mode original_mode
 
-  and anything_else_in_table mode (l, _ as v) =
+  and anything_else_in_table _mode (l, _ as v) =
+          dbg ~__POS__ ~__FUNCTION__ " (%d, %d)" (fst l) (snd l);
     report l (`Bad_content "table") !throw (fun () ->
-    in_body_mode_rules "table" mode v)
+    in_body_mode_rules "table" in_body_mode v) (* XXX changed here *)
 
   (* 8.2.5.4.9. *)
   and in_table_mode () =
-    dispatch tokens (fun v -> in_table_mode_rules in_table_mode v)
+    dispatch tokens (fun ((l, _) as v) ->
+          dbg ~__POS__ "in_table_mode (%d, %d)" (fst l) (snd l);
+      in_table_mode_rules in_table_mode v)
 
   and in_table_mode_rules mode = function
-    | (_, `Char _| _, `String _) as v
+    | (l, `Char _| l, `String _) as v
         when Stack.current_element_is open_elements
                ["table"; "tbody"; "tfoot"; "thead"; "tr"] ->
+          dbg ~__POS__ "in_table_mode_rules (%d, %d)" (fst l) (snd l);
       push tokens v;
       in_table_text_mode true [] mode
 
@@ -2178,8 +2227,10 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       pop_to_table_context l (fun () ->
       push_and_emit l t in_table_body_mode)
 
-    | l, `Start {name = "td" | "th" | "tr"} as v ->
+    | l, `Start ({name = "td" | "th" | "tr"} as t) as v ->
+          dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       pop_to_table_context l (fun () ->
+          dbg ~__POS__ "pop_to_table_context.K %S (%d, %d)" t.name (fst l) (snd l);
       push tokens v;
       push_implicit l "tbody" in_table_body_mode)
 
@@ -2212,9 +2263,10 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       pop l mode))
 
     | l, `Start ({name = "form"} as t) ->
+        dbg ~__POS__ ~__FUNCTION__ "start %S (%d, %d)" t.name (fst l) (snd l);
       misnested_tag l t "table" (fun () ->
-      push_and_emit l t (fun () ->
-      pop l mode))
+        push_and_emit l t (fun () ->
+          pop l mode))
 
     | _, `EOF as v ->
       in_body_mode_rules "table" mode v
@@ -2354,8 +2406,10 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   (* 8.2.5.4.13. *)
   and in_table_body_mode () =
+    dbg ~__POS__ ~__FUNCTION__ "%a" pp_stack open_elements;
     dispatch tokens begin function
       | l, `Start ({name = "tr"} as t) ->
+          dbg ~__POS__ ~__FUNCTION__ "start %S (%d, %d)" t.name (fst l) (snd l);
         pop_to_table_body_context l (fun () ->
         push_and_emit l t in_row_mode)
 
@@ -2405,17 +2459,25 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   (* 8.2.5.4.14. *)
   and in_row_mode () =
-    dispatch tokens begin function
+    dbg ~__POS__ ~__FUNCTION__ "%a" pp_stack open_elements;
+    dispatch tokens begin fun (l, tok) -> 
+      dbg ~__POS__ "dispatched (%d, %d)" (fst l) (snd l);
+      match l, tok with
       | l, `Start ({name = "th" | "td"} as t) ->
         Active.add_marker active_formatting_elements;
         pop_to_table_row_context l (fun () ->
         push_and_emit l t in_cell_mode)
 
-      | l, `End {name = "tr"} ->
+      | l, `End ({name = "tr"} as t) ->
+          dbg ~__POS__ "end %S (%d, %d)" t.name (fst l) (snd l);
         if not @@ Stack.in_table_scope open_elements "tr" then
+          (
+          dbg ~__POS__ "report unmatched_end_tag tr (%d, %d)" (fst l) (snd l);
           report l (`Unmatched_end_tag "tr") !throw in_row_mode
+          )
         else
-          pop_to_table_row_context l (fun () ->
+          pop_to_table_row_context l (fun () -> (* XXX should be `body`? *)
+          dbg ~__POS__ "pop_to_table_body_context.K %s (%d, %d)" t.name (fst l) (snd l);
           pop l in_table_body_mode)
 
       | l, `Start {name =
@@ -2454,8 +2516,10 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
   (* 8.2.5.4.15. *)
   and in_cell_mode () =
+    dbg ~__POS__ ~__FUNCTION__ "%a" pp_stack open_elements;
     dispatch tokens begin function
       | l, `End {name = "td" | "th" as name} ->
+          dbg ~__POS__ ~__FUNCTION__ "end %S (%d, %d)" name (fst l) (snd l);
         if not @@ Stack.in_table_scope open_elements name then
           report l (`Unmatched_end_tag name) !throw in_cell_mode
         else
@@ -2480,6 +2544,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
 
       | l, `End {name =
           "table" | "tbody" | "tfoot" | "thead" | "tr" as name} as v ->
+          dbg ~__POS__ ~__FUNCTION__ " should report /tr %S (%d, %d)@.stack: %a" name (fst l) (snd l) pp_stack open_elements;
         if not @@ Stack.in_table_scope open_elements name then
           report l (`Unmatched_end_tag name) !throw in_cell_mode
         else
@@ -2840,6 +2905,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
     in
 
     push_and_emit ~acknowledge:true ~namespace l tag (fun () ->
+          dbg ~__POS__ ~__FUNCTION__ "%S self-closing: %b (%d, %d)" tag.name tag.self_closing (fst l) (snd l);
     if tag.self_closing then pop l mode
     else mode ())
 
@@ -2848,7 +2914,8 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
       | ("color" | "face" | "size"), _ -> true
       | _ -> false)
 
-  and foreign_content mode force_html v =
+  and foreign_content mode force_html ((l, _) as v) =
+          dbg ~__POS__ ~__FUNCTION__ " (%d, %d)"  (fst l) (snd l);
     match v with
     | l, `Char 0 ->
       report l (`Bad_token ("U+0000", "foreign content", "null")) !throw
@@ -2883,6 +2950,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
         "listing" | "main" | "meta" | "nobr" | "ol" | "p" | "pre" | "ruby" |
         "s" | "small" | "span" | "strong" | "strike" | "sub" | "sup" |
         "table" | "tt" | "u" | "ul" | "var" as name} as t) as v ->
+          dbg ~__POS__ "start %S (%d, %d)" t.name (fst l) (snd l);
       if name = "font" && not @@ is_html_font_tag t then
         foreign_start_tag mode l t
       else
@@ -2897,6 +2965,7 @@ let parse ?depth_limit requested_context report (tokens, set_tokenizer_state, se
           l mode))
 
     | l, `Start t ->
+          dbg ~__POS__ ~__FUNCTION__ "start %S (%d, %d)" t.name (fst l) (snd l);
       foreign_start_tag mode l t
 
     | l, `End {name = "script"}

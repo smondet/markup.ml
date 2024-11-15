@@ -1,8 +1,6 @@
 (* This file is part of Markup.ml, released under the MIT license. See
    LICENSE.md for details, or visit https://github.com/aantron/markup.ml. *)
 
-
-
 module type IO =
 sig
   type 'a t
@@ -117,6 +115,7 @@ struct
 
   let parse_html report ?depth_limit ?encoding context source =
     let with_encoding (encoding : Encoding.t) k =
+      Common.dbg ~__POS__ "with_encoding";
       source
       |> encoding ~report
       |> Input.preprocess Common.is_valid_html_char report
@@ -132,7 +131,7 @@ struct
         Detect.select_html source throw (fun encoding ->
         with_encoding encoding k)
     in
-
+    Common.dbg ~__POS__ "construct";
     Kstream.construct constructor
     |> stream_to_parser
 
